@@ -1,26 +1,43 @@
 import datetime
+import http.server
+import socketserver
+import threading
 import time
 import requests
 from bs4 import BeautifulSoup
 
-# --- بيانات البوت الخاصة بك ---
+# --- بيانات البوت ---
 BOT_TOKEN = "9105331830:AAFrnY5EYjpCbs8VlQ7TuJqw-rczJcaQCco"
 CHAT_ID = "5050317718"
 
 URL = "https://district5.scenecinemas.com/"
-
-# قائمة الأفلام المطلوب مراقبتها
 TARGET_MOVIES = {
     "dune": "Dune 3",
     "doomsday": "Avengers: Doomsday"
 }
 
-CHECK_INTERVAL_SECONDS = 120  # الفحص كل دقيقتين
-notified_movies = set()  # لتسجيل الفيلم اللي تم إرسال تنبيه له لمنع التكرار
+CHECK_INTERVAL_SECONDS = 120
+notified_movies = set()
+
+
+# سيرفر ويب بسيط لإبقاء خدمة Render المجانية تعمل
+def run_dummy_server():
+    class SimpleHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Cinema Bot is running!")
+
+        def log_message(self, format, *args):
+            return  # كتم سجلات الويب
+
+    import os
+    port = int(os.environ.get("PORT", 8080))
+    with socketserver.TCPServer(("", port), SimpleHandler) as httpd:
+        httpd.serve_forever()
 
 
 def send_telegram(message: str):
-    """إرسال إشعار فوري إلى تليجرام"""
     endpoint = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -33,7 +50,7 @@ def send_telegram(message: str):
         res.raise_for_status()
         return True
     except Exception as e:
-        print(f"[!] خطأ في إرسال التليجرام: {e}")
+        print(f"[!] خطأ تليجرام: {e}")
         return False
 
 
@@ -46,11 +63,9 @@ def check_for_movies():
         ),
         "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
     }
-
     try:
         response = requests.get(URL, headers=headers, timeout=15)
         if response.status_code != 200:
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] كود الاستجابة: {response.status_code}")
             return []
 
         soup = BeautifulSoup(response.text, "html.parser")
@@ -60,23 +75,15 @@ def check_for_movies():
         for keyword, movie_name in TARGET_MOVIES.items():
             if keyword in page_text and keyword not in notified_movies:
                 found.append((keyword, movie_name))
-
         return found
-
-    except requests.RequestException as err:
-        print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] تعذر الاتصال بالموقع: {err}")
-
-    return []
+    except Exception as err:
+        print(f"[!] خطأ اتصال: {err}")
+        return []
 
 
-def main():
-    print("[*] تم بدء تشغيل السكربت لمراقبة الفيلمين (Dune & Doomsday)...")
-
-    test_msg = "✅ *تم تفعيل البوت!*\nسأقوم بإرسال إشعار بمجرد توفر تذاكر Dune 3 أو Avengers: Doomsday في ديسكت 5."
-    if send_telegram(test_msg):
-        print("[+] تم إرسال رسالة التأكيد على تليجرام.")
-    else:
-        print("[!] تأكد من الضغط على Start داخل شات البوت على تليجرام.")
+def monitor_loop():
+    print("[*] بدأ فحص الموقع...")
+    send_telegram("✅ *تم تفعيل البوت على Render مجاناً!*\nجاري مراقبة تذاكر Dune 3 و Avengers: Doomsday.")
 
     while True:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -85,21 +92,22 @@ def main():
         for keyword, movie_name in found_movies:
             alert = (
                 f"🚨 *الحق يا صاحبي! تذاكر {movie_name} نزلت في ديسكت 5!*\n\n"
-                "ادخل احجز فوراً من الرابط:\n"
-                f"{URL}"
+                f"احجز فوراً من الرابط:\n{URL}"
             )
             send_telegram(alert)
             notified_movies.add(keyword)
-            print(f"[{timestamp}] تم العثور على {movie_name} وإرسال التنبيه!")
+            print(f"[{timestamp}] تم إرسال تنبيه: {movie_name}")
 
-        # إذا نزل الفيلمين خلاص، يوقف البرنامج
         if len(notified_movies) == len(TARGET_MOVIES):
-            print("[*] تم نزول جميع الأفلام المحددة، إنهاء السكربت.")
             break
 
-        print(f"[{timestamp}] جاري المراقبة.. الفحص القادم بعد دقيقتين.")
         time.sleep(CHECK_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
-    main()
+    # تشغيل مراقبة السينما في خلفية السيرفر
+    t = threading.Thread(target=monitor_loop, daemon=True)
+    t.start()
+
+    # تشغيل سيرفر الويب لإرضاء Render
+    run_dummy_server()
